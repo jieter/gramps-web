@@ -533,13 +533,15 @@ export class GrampsJs extends LitElement {
     }
     if (this.appState.path.page === 'login' && this._metadataConfirmed) {
       window.history.pushState({}, '', '')
-      this._updateAppState({path: {page: 'home', pageId: '', pageId2: ''}})
+      this._updateAppState({
+        path: {page: 'home', pageId: '', pageId2: '', pageId3: ''},
+      })
     }
     if (this.appState.path.page === 'settings' && !this.appState.path.pageId) {
       // needed for backwards compatibility
       window.history.pushState({}, '', 'settings/user')
       this._updateAppState({
-        path: {page: 'settings', pageId: 'user', pageId2: ''},
+        path: {page: 'settings', pageId: 'user', pageId2: '', pageId3: ''},
       })
     }
     if (
@@ -942,11 +944,18 @@ export class GrampsJs extends LitElement {
     }
 
     if (path === '/') {
-      this._updateAppState({path: {page: 'home', pageId: '', pageId2: ''}})
-    } else {
-      const [page, pageId, pageId2] = path.slice(1).split('/')
       this._updateAppState({
-        path: {page, pageId: pageId ?? '', pageId2: pageId2 ?? ''},
+        path: {page: 'home', pageId: '', pageId2: '', pageId3: ''},
+      })
+    } else {
+      const [page, pageId, pageId2, pageId3] = path.slice(1).split('/')
+      this._updateAppState({
+        path: {
+          page,
+          pageId: pageId ?? '',
+          pageId2: pageId2 ?? '',
+          pageId3: pageId3 ?? '',
+        },
       })
     }
 
@@ -1005,11 +1014,13 @@ export class GrampsJs extends LitElement {
     const page = path.split('/')[0]
     const pageId = path.split('/')[1]
     const pageId2 = path.split('/')[2]
+    const pageId3 = path.split('/')[3] ?? ''
     const appPath = this.appState.path
     if (
       page !== appPath.page ||
       pageId !== appPath.pageId ||
-      pageId2 !== appPath.pageId2
+      pageId2 !== appPath.pageId2 ||
+      pageId3 !== (appPath.pageId3 ?? '')
     ) {
       const href = `/${path}`
       this._loadPage(href)

@@ -4,6 +4,7 @@ export const TREE_VIEWS = [
   'hourglass',
   'relationship',
   'fan',
+  'connection',
 ]
 
 export const DEFAULT_TREE_VIEW = 'ancestor'
@@ -17,7 +18,8 @@ export function getTreeViewTabIndex(view) {
 }
 
 // The app path of the tree view showing `grampsId` in `chart`, without the
-// person when there is none
-export function treeViewPath(chart, grampsId) {
-  return ['tree', chart, grampsId].filter(Boolean).join('/')
+// person when there is none. A chart of two people, the connection chart,
+// also has the second person, `other`.
+export function treeViewPath(chart, grampsId, other = '') {
+  return ['tree', chart, grampsId, grampsId && other].filter(Boolean).join('/')
 }

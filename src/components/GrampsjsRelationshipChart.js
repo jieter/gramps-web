@@ -9,6 +9,8 @@ class GrampsjsRelationshipChart extends GrampsjsChartBase {
   static get properties() {
     return {
       grampsId: {type: String},
+      // A second person whose card has a shadow like the selected person's
+      highlightGrampsId: {type: String},
       nameDisplayFormat: {type: String},
       canEdit: {type: Boolean},
     }
@@ -17,6 +19,7 @@ class GrampsjsRelationshipChart extends GrampsjsChartBase {
   constructor() {
     super()
     this.grampsId = ''
+    this.highlightGrampsId = ''
     this._chart = new RelationshipChart()
   }
 
@@ -54,7 +57,11 @@ class GrampsjsRelationshipChart extends GrampsjsChartBase {
   }
 
   chartOptions() {
+    const highlighted = this.highlightGrampsId
+      ? this._graph.personByGrampsId(this.highlightGrampsId)
+      : null
     return {
+      shadowHandles: highlighted ? [highlighted.handle] : [],
       getImageUrl: node => getImageUrl(node.person, 100),
       nameDisplayFormat: this.nameDisplayFormat,
       ...getSymbols(this.appState.settings, s => this._(s)),

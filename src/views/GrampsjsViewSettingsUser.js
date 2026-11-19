@@ -350,6 +350,8 @@ export class GrampsjsViewSettingsUser extends GrampsjsView {
         return 'Relationship Graph'
       case 'fan':
         return 'Fan Chart'
+      case 'connection':
+        return 'Connection'
       default:
         return 'Ancestor Tree'
     }

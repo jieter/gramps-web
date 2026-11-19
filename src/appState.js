@@ -310,6 +310,7 @@ export function getInitialAppState() {
       page: 'home',
       pageId: '',
       pageId2: '',
+      pageId3: '',
     },
     // `background: true` keeps the request out of the progress indicator.
     apiGet: (endpoint, {background = false, ...options} = {}) => {

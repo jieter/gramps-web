@@ -22,6 +22,7 @@ import {
   mdiHomeAccount,
   mdiPencil,
   mdiTargetAccount,
+  mdiVectorPolyline,
 } from '@mdi/js'
 import {GrampsjsView} from './GrampsjsView.js'
 import {GrampsjsStaleDataMixin} from '../mixins/GrampsjsStaleDataMixin.js'
@@ -227,15 +228,25 @@ export class GrampsjsViewTree extends GrampsjsStaleDataMixin(GrampsjsView) {
           background-color: var(--grampsjs-body-font-color-10);
         }
 
-        #controls md-input-chip {
+        #controls md-input-chip,
+        #controls md-assist-chip {
           --md-sys-color-outline: var(--grampsjs-body-font-color-30);
           --md-sys-color-primary: var(--grampsjs-body-font-color-40);
           max-width: 240px;
           margin: 0 4px;
         }
 
+        #controls .connection-relationship {
+          margin: 0 4px;
+          color: var(--grampsjs-text-secondary-color);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
         @media (max-width: 599px) {
-          #controls md-input-chip {
+          #controls md-input-chip,
+          #controls md-assist-chip {
             max-width: 140px;
           }
         }
@@ -280,6 +291,10 @@ export class GrampsjsViewTree extends GrampsjsStaleDataMixin(GrampsjsView) {
     this._data = []
     this._dataChart = undefined
     this._dataUrl = ''
+    // The loader of a chart with its own, or null for the people at `_dataUrl`
+    this._dataLoad = null
+    // What a chart's loader returned besides the people, for its controls
+    this._chartInfo = {}
     this._dataRequest = 0
     // The expanded branches of the shown chart and person, by the handle of
     // the person, with their Gramps ID and the direction of the branch
@@ -316,6 +331,14 @@ export class GrampsjsViewTree extends GrampsjsStaleDataMixin(GrampsjsView) {
 
   setChartState(changes) {
     this._chartState = {...this._chartState, ...changes}
+  }
+
+  get chartData() {
+    return this._data
+  }
+
+  get chartInfo() {
+    return this._chartInfo
   }
 
   connectedCallback() {
@@ -364,7 +387,22 @@ export class GrampsjsViewTree extends GrampsjsStaleDataMixin(GrampsjsView) {
       this._dataChart = this.chart
       this._data = []
       this._dataUrl = ''
-      this._chartState = {}
+      this._dataLoad = null
+      this._chartInfo = {}
+      // The connection chart starts from the home person
+      this._chartState =
+        this.chart === 'connection' && this.settings?.homePerson
+          ? {other: this.settings.homePerson}
+          : {}
+    }
+    // The second person of the connection chart is in the URL, once it has
+    // one
+    const other =
+      this.active && this.chart === 'connection'
+        ? this.appState?.path?.pageId3
+        : ''
+    if (other && other !== this._chartState.other) {
+      this._chartState = {...this._chartState, other}
     }
     // Expanded branches belong to one chart of one person
     const branchesOf = `${this.chart}:${this.grampsId}`
@@ -401,21 +439,36 @@ export class GrampsjsViewTree extends GrampsjsStaleDataMixin(GrampsjsView) {
 
   // Fetches the people the chart needs when the request differs from the last
   // one, which happens when the selected person, the chart, the language or a
-  // setting of the request changes
+  // setting of the request changes. A chart with a loader of its own names
+  // its request with a key, and an empty key leaves the chart empty.
   _fetchIfNeeded() {
     if (!this.grampsId) {
       return
     }
-    const url = chartDataUrl(
-      this.definition,
-      this.grampsId,
-      this.settingValues,
-      this.appState?.i18n?.lang,
-      [...this._branches.values()]
-    )
-    if (url !== this._dataUrl) {
-      this._dataUrl = url
+    const {definition, grampsId, settingValues} = this
+    const lang = this.appState?.i18n?.lang || 'en'
+    const state = this._chartState
+    const url = definition.load
+      ? definition.dataKey(grampsId, settingValues, lang, state)
+      : chartDataUrl(definition, grampsId, settingValues, lang, [
+          ...this._branches.values(),
+        ])
+    if (url === this._dataUrl) {
+      return
+    }
+    this._dataUrl = url
+    this._dataLoad = definition.load
+      ? () =>
+          definition.load(this.appState, grampsId, settingValues, lang, state)
+      : null
+    if (url) {
       this._fetchData(url)
+    } else {
+      // A response to the previous request is ignored
+      this._dataRequest += 1
+      this.loading = false
+      this._chartInfo = {}
+      this._data = []
     }
   }
 
@@ -424,13 +477,16 @@ export class GrampsjsViewTree extends GrampsjsStaleDataMixin(GrampsjsView) {
     const request = this._dataRequest
     const expanded = new Set(this._branches.keys())
     this.loading = true
-    const data = await this.appState.apiGet(url)
+    const data = this._dataLoad
+      ? await this._dataLoad()
+      : await this.appState.apiGet(url)
     if (request !== this._dataRequest) {
       return
     }
     this.loading = false
     if ('data' in data) {
       this.error = false
+      this._chartInfo = data.info ?? {}
       this._data = data.data
       this._expanded = expanded
     } else if ('error' in data) {
@@ -506,6 +562,11 @@ export class GrampsjsViewTree extends GrampsjsStaleDataMixin(GrampsjsView) {
         icon: relationshipGraphIconPath,
       },
       {value: 'fan', label: this._('Fan Chart'), icon: chartFanIconPath},
+      {
+        value: 'connection',
+        label: this._('Connection'),
+        icon: mdiVectorPolyline,
+      },
     ]
     return html`
       <grampsjs-pill-toggle
@@ -961,9 +1022,19 @@ export class GrampsjsViewTree extends GrampsjsStaleDataMixin(GrampsjsView) {
   }
 
   // Shows `grampsId` in `chart` by going to its URL, which adds an entry to
-  // the browser history, or with `replace`, replaces the current one
-  _navigate(chart, grampsId, replace = false) {
-    fireEvent(this, 'nav', {path: treeViewPath(chart, grampsId), replace})
+  // the browser history, or with `replace`, replaces the current one. The
+  // connection chart keeps its second person, unless `other` is another one.
+  _navigate(chart, grampsId, replace = false, other = this._chartState.other) {
+    const second = chart === 'connection' ? other ?? '' : ''
+    fireEvent(this, 'nav', {
+      path: treeViewPath(chart, grampsId, second),
+      replace,
+    })
+  }
+
+  // Shows the connection of the selected person with `grampsId`
+  setOtherPerson(grampsId) {
+    this._navigate(this.chart, this.grampsId, false, grampsId)
   }
 
   get _preferredView() {
@@ -978,7 +1049,8 @@ export class GrampsjsViewTree extends GrampsjsStaleDataMixin(GrampsjsView) {
       : this._preferredView
   }
 
-  // Reads the chart and the person from the URL, /tree/<chart>/<grampsId>. A
+  // Reads the chart and the person from the URL, /tree/<chart>/<grampsId>, or
+  // for the connection chart, /tree/connection/<grampsId>/<second person>. A
   // URL without a chart gets `_chartWithoutPath`, one with an unknown chart
   // the preferred chart. A URL without a person keeps the shown person, at
   // first the home person.
@@ -995,11 +1067,17 @@ export class GrampsjsViewTree extends GrampsjsStaleDataMixin(GrampsjsView) {
     this.grampsId = pageId2 || this.grampsId || this.settings?.homePerson || ''
   }
 
-  // Replaces a URL that does not name the shown chart and person with one
+  // Replaces a URL that does not name the shown chart and people with one
   // that does
   _completePath() {
-    const {pageId = '', pageId2 = ''} = this.appState?.path ?? {}
-    if (pageId !== this.chart || pageId2 !== this.grampsId) {
+    const {pageId = '', pageId2 = '', pageId3 = ''} = this.appState?.path ?? {}
+    const other =
+      this.chart === 'connection' ? this._chartState.other ?? '' : ''
+    if (
+      pageId !== this.chart ||
+      pageId2 !== this.grampsId ||
+      pageId3 !== other
+    ) {
       this._navigate(this.chart, this.grampsId, true)
     }
   }

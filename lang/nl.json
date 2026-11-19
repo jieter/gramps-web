@@ -551,5 +551,10 @@
     "Changes applied": "Wijzigingen toegepast",
     "These changes can no longer be applied.": "Deze wijzigingen kunnen niet meer worden toegepast.",
     "Attach images": "Afbeeldingen bijsluiten",
-    "Media files are imported separately, under %s.": "Mediabestanden worden afzonderlijk geïmporteerd onder %s."
+    "Media files are imported separately, under %s.": "Mediabestanden worden afzonderlijk geïmporteerd onder %s.",
+    "Connection": "Verbinding",
+    "Max number of paths": "Max. aantal paden",
+    "Select a second person": "Selecteer een tweede persoon",
+    "No connection found": "Geen verbinding gevonden",
+    "Ignore their marriage": "Hun huwelijk negeren"
 }

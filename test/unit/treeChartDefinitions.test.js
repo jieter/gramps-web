@@ -627,3 +627,313 @@ describe('expanded branches', () => {
     expect(lastRules(apiGet)).toHaveLength(2)
   })
 })
+
+describe('connection chart', () => {
+  const {connection} = chartDefinitions
+  const values = chartSettingValues(connection, {})
+
+  // Answers the requests of the connection chart: two people by Gramps ID,
+  // their paths and the people on them
+  function connectionApi(paths, bloodPaths = paths, extended = {}) {
+    return vi.fn(async url => {
+      const byId = /gramps_id=([^&]*)/.exec(url)
+      if (byId) {
+        return {data: [{handle: `h${byId[1]}`}]}
+      }
+      if (url.startsWith('/api/relations/')) {
+        return {data: url.includes('blood_only=true') ? bloodPaths : paths}
+      }
+      const handles = /handles=([^&]*)/.exec(url)[1].split(',')
+      return {
+        data: handles.map(handle => ({
+          handle,
+          gramps_id: handle,
+          extended: extended[handle],
+        })),
+      }
+    })
+  }
+
+  const step = (handle, relationship) => ({
+    handle,
+    link: null,
+    relationship_string: relationship,
+  })
+
+  it('has nothing to fetch without a second person', () => {
+    expect(connection.dataKey('I1', values, 'en', {})).toBe('')
+    expect(connection.dataKey('I1', values, 'en', {other: 'I1'})).toBe('')
+    expect(connection.dataKey('I1', values, 'en', {other: 'I2'})).not.toBe('')
+  })
+
+  it('fetches the people on the paths, each once', async () => {
+    const apiGet = connectionApi([
+      {steps: [step('hI1', null), step('hF', 'son'), step('hI2', 'brother')]},
+      {steps: [step('hI1', null), step('hM', 'son'), step('hI2', 'brother')]},
+    ])
+    const result = await connection.load({apiGet}, 'I1', values, 'en', {
+      other: 'I2',
+    })
+    expect(apiGet.mock.calls[2][0]).toMatch('/api/relations/hI1/hI2/paths?')
+    expect(result.data.map(p => p.handle)).toEqual(['hI1', 'hF', 'hI2', 'hM'])
+    expect(result.info).toEqual({relationships: ['brother']})
+  })
+
+  it('also shows the blood relationship of a married couple', async () => {
+    const apiGet = connectionApi(
+      [{steps: [step('hI1', null), step('hI2', 'wife')]}],
+      [
+        {
+          steps: [
+            step('hI1', null),
+            step('hF', 'father'),
+            step('hA', 'aunt'),
+            step('hI2', 'first cousin'),
+          ],
+        },
+      ]
+    )
+    const result = await connection.load({apiGet}, 'I1', values, 'en', {
+      other: 'I2',
+    })
+    const relationUrls = apiGet.mock.calls
+      .map(([url]) => url)
+      .filter(url => url.startsWith('/api/relations/'))
+    expect(relationUrls).toEqual([
+      '/api/relations/hI1/hI2/paths?locale=en&max=50',
+      '/api/relations/hI1/hI2/paths?locale=en&max=1&blood_only=true',
+    ])
+    expect(result.data.map(p => p.handle)).toEqual(['hI1', 'hI2', 'hF', 'hA'])
+    expect(result.info).toEqual({relationships: ['wife', 'first cousin']})
+  })
+
+  it('leaves out paths through a shared child', async () => {
+    const link = (handle, linkType, relationship) => ({
+      handle,
+      link: linkType,
+      relationship_string: relationship,
+    })
+    const apiGet = connectionApi(
+      [
+        {steps: [link('hI1', null, null), link('hI2', 'spouse', 'wife')]},
+        {
+          steps: [
+            link('hI1', null, null),
+            link('hC', 'child', 'son'),
+            link('hI2', 'parent', 'wife'),
+          ],
+        },
+        {
+          steps: [
+            link('hI1', null, null),
+            link('hC', 'child', 'son'),
+            link('hD', 'sibling', 'daughter'),
+            link('hI2', 'parent', 'wife'),
+          ],
+        },
+        {
+          steps: [
+            link('hI1', null, null),
+            link('hS', 'sibling', 'sister'),
+            link('hN', 'child', 'niece'),
+            link('hI2', 'spouse', 'wife'),
+          ],
+        },
+      ],
+      []
+    )
+    const result = await connection.load(
+      {apiGet},
+      'I1',
+      {...values, paths: 2},
+      'en',
+      {other: 'I2'}
+    )
+    expect(result.data.map(p => p.handle)).toEqual(['hI1', 'hI2', 'hS', 'hN'])
+  })
+
+  it('can leave out the marriage of the two people', async () => {
+    const link = (handle, linkType, relationship) => ({
+      handle,
+      link: linkType,
+      relationship_string: relationship,
+    })
+    const apiGet = connectionApi(
+      [
+        {steps: [link('hI1', null, null), link('hI2', 'spouse', 'wife')]},
+        {
+          steps: [
+            link('hI1', null, null),
+            link('hS', 'sibling', 'sister'),
+            link('hN', 'child', 'niece'),
+            link('hI2', 'spouse', null),
+          ],
+        },
+      ],
+      []
+    )
+    const load = ignoreMarriage =>
+      connection.load({apiGet}, 'I1', {...values, ignoreMarriage}, 'en', {
+        other: 'I2',
+      })
+    expect((await load('no')).data.map(p => p.handle)).toEqual(['hI1', 'hI2'])
+    const ignored = await load('yes')
+    expect(ignored.data.map(p => p.handle)).toEqual(['hI1', 'hS', 'hN', 'hI2'])
+    expect(ignored.info).toEqual({relationships: []})
+    expect(
+      connection.dataKey('I1', {...values, ignoreMarriage: 'yes'}, 'en', {
+        other: 'I2',
+      })
+    ).not.toBe(connection.dataKey('I1', values, 'en', {other: 'I2'}))
+  })
+
+  it('adds the parents that siblings share and the other parents', async () => {
+    const link = (handle, linkType) => ({
+      handle,
+      link: linkType,
+      relationship_string: null,
+    })
+    // The husband's other wife is a sister of the selected person's mother
+    const parentFamily = {
+      handle: 'F',
+      father_handle: 'hP',
+      mother_handle: 'hQ',
+      child_ref_list: [{ref: 'hM'}, {ref: 'hA'}],
+    }
+    const apiGet = connectionApi(
+      [
+        {
+          steps: [
+            link('hI1', null),
+            link('hM', 'parent'),
+            link('hA', 'sibling'),
+            link('hI2', 'spouse'),
+          ],
+        },
+      ],
+      [],
+      {
+        hM: {primary_parent_family: parentFamily},
+        // The selected person's father is not on the path
+        hI1: {
+          primary_parent_family: {
+            handle: 'G',
+            father_handle: 'hD',
+            mother_handle: 'hM',
+            child_ref_list: [{ref: 'hI1'}],
+          },
+        },
+      }
+    )
+    const result = await connection.load({apiGet}, 'I1', values, 'en', {
+      other: 'I2',
+    })
+    expect(apiGet.mock.calls.at(-1)[0]).toMatch('handles=hD,hP,hQ&')
+    expect(result.data.map(p => p.handle)).toEqual([
+      'hI1',
+      'hM',
+      'hA',
+      'hI2',
+      'hD',
+      'hP',
+      'hQ',
+    ])
+  })
+
+  it('reports two people without a connection', async () => {
+    const apiGet = connectionApi([])
+    const result = await connection.load({apiGet}, 'I1', values, 'en', {
+      other: 'I2',
+    })
+    expect(result).toEqual({data: [], info: {notConnected: true}})
+  })
+
+  it('starts from the home person and clears without a second person', async () => {
+    const view = new GrampsjsViewTree()
+    const apiGet = connectionApi([
+      {steps: [step('hI1', null), step('hI2', 'x')]},
+    ])
+    view.appState = {settings: {}, i18n: {lang: 'en'}, apiGet}
+    view.settings = {homePerson: 'I2'}
+    view.grampsId = 'I1'
+    view._currentTabId = TREE_VIEWS.indexOf('connection')
+    view.willUpdate(new Map())
+    expect(view.chartState).toEqual({other: 'I2'})
+    view._fetchIfNeeded()
+    await vi.waitFor(() => expect(view.chartData).toHaveLength(2))
+    expect(view.chartInfo).toEqual({relationships: ['x']})
+    view.setChartState({other: 'I1'})
+    view._fetchIfNeeded()
+    expect(view.chartData).toEqual([])
+    expect(view.chartInfo).toEqual({})
+  })
+})
+
+describe('connection chart URL', () => {
+  function makeConnectionView(path) {
+    const view = new GrampsjsViewTree()
+    view.appState = {
+      settings: {},
+      i18n: {lang: 'en'},
+      apiGet: vi.fn(() => new Promise(() => {})),
+      path,
+    }
+    view.settings = {homePerson: 'I9'}
+    view.active = true
+    const navs = []
+    view.addEventListener('nav', e => navs.push(e.detail))
+    return {view, navs}
+  }
+
+  it('reads the second person from the URL', () => {
+    const {view} = makeConnectionView({
+      page: 'tree',
+      pageId: 'connection',
+      pageId2: 'I1',
+      pageId3: 'I2',
+    })
+    view.willUpdate(new Map())
+    expect(view.grampsId).toBe('I1')
+    expect(view.chartState.other).toBe('I2')
+  })
+
+  it('adds the home person to a URL without a second person', () => {
+    const {view, navs} = makeConnectionView({
+      page: 'tree',
+      pageId: 'connection',
+      pageId2: 'I1',
+      pageId3: '',
+    })
+    view.willUpdate(new Map())
+    view._completePath()
+    expect(navs).toEqual([{path: 'tree/connection/I1/I9', replace: true}])
+  })
+
+  it('keeps the second person when another person is selected', () => {
+    const {view, navs} = makeConnectionView({
+      page: 'tree',
+      pageId: 'connection',
+      pageId2: 'I1',
+      pageId3: 'I2',
+    })
+    view.willUpdate(new Map())
+    view._selectPerson({detail: {grampsId: 'I3'}})
+    view.setOtherPerson('I4')
+    expect(navs).toEqual([
+      {path: 'tree/connection/I3/I2', replace: false},
+      {path: 'tree/connection/I1/I4', replace: false},
+    ])
+  })
+
+  it('leaves the second person out of other charts', () => {
+    const {view, navs} = makeConnectionView({
+      page: 'tree',
+      pageId: 'connection',
+      pageId2: 'I1',
+      pageId3: 'I2',
+    })
+    view.willUpdate(new Map())
+    view._navigate('ancestor', 'I1')
+    expect(navs).toEqual([{path: 'tree/ancestor/I1', replace: false}])
+  })
+})

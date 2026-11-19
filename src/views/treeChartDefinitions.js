@@ -1,16 +1,20 @@
 import {html} from 'lit'
 
+import '@material/web/chips/assist-chip'
 import '@material/web/chips/input-chip'
 import '@material/web/iconbutton/icon-button.js'
 import '@material/web/menu/menu'
 import '@material/web/menu/menu-item'
-import {mdiPalette} from '@mdi/js'
+import {mdiAccountArrowRight, mdiPalette} from '@mdi/js'
 
 import '../components/GrampsjsFanChart.js'
+import '../components/GrampsjsFormSelectObject.js'
 import '../components/GrampsjsIcon.js'
 import '../components/GrampsjsRelationshipChart.js'
 import '../components/GrampsjsTooltip.js'
 import '../components/GrampsjsTreeChart.js'
+import {FamilyGraph} from '../charts/model/FamilyGraph.js'
+import {formatChartName} from '../charts/util.js'
 import {chartNameDisplayFormat, menuSelectionHandler} from '../util.js'
 
 // A chart definition describes one chart of the tree view:
@@ -32,6 +36,11 @@ import {chartNameDisplayFormat, menuSelectionHandler} from '../util.js'
 //   the fan chart colour, and `expanded` the handles of the people whose
 //   branches show one more generation.
 // - `renderControls(view)`, optional: controls after the common ones.
+// - `dataKey(grampsId, values, lang, state)` and
+//   `load(appState, grampsId, values, lang, state)`, optional: for a chart
+//   whose people are not one filtered list. `load` fetches them and returns
+//   `{data}`, optionally with `info` for the controls, or `{error}`. It runs
+//   when the key changes; an empty key means there is nothing to fetch.
 //
 // Generation settings count the generations beyond the selected person.
 // Chart components and filter rules also count the selected person's
@@ -200,6 +209,200 @@ function renderFanColorControls(view) {
   `
 }
 
+// The handle of the person with `grampsId`, or undefined
+async function personHandle(appState, grampsId) {
+  const result = await appState.apiGet(
+    `/api/people/?gramps_id=${encodeURIComponent(grampsId)}&keys=handle`
+  )
+  return result.data?.[0]?.handle
+}
+
+// Whether a path goes down to a child, across any of the child's siblings and
+// up to a parent, which only says again that the two parents are partners. A
+// step's `link` is how its person is linked to the person before them.
+function throughSharedChild({steps}) {
+  let down = false
+  for (const {link} of steps) {
+    if (link === 'parent' && down) {
+      return true
+    }
+    if (link !== 'sibling') {
+      down = link === 'child'
+    }
+  }
+  return false
+}
+
+// Whether a path is just the marriage of the two people. A path never visits
+// a person twice, so no longer path runs through that marriage.
+const isTheirMarriage = path =>
+  path.steps.length === 2 && path.steps[1].link === 'spouse'
+
+// The people connecting the selected person and the second person in
+// `state.other`: those on the shortest chains of family links, which also run
+// through partners, and those on the blood relationship, up to a common
+// ancestor and down again. The shortest chain of a married couple is their
+// marriage, which would otherwise hide that they are also cousins, say.
+// `info.relationships` are the relationships of the second person to the
+// selected one along these chains, without the ones that have no name, such
+// as a chain through two marriages. With `ignoreMarriage`, a marriage of the
+// two people is left out, so that the chains after it are shown instead.
+async function loadConnection(
+  appState,
+  grampsId,
+  {paths, ignoreMarriage},
+  lang,
+  state
+) {
+  const [handle1, handle2] = await Promise.all([
+    personHandle(appState, grampsId),
+    personHandle(appState, state.other),
+  ])
+  if (!handle1 || !handle2) {
+    return {data: [], info: {}}
+  }
+  const url = `/api/relations/${handle1}/${handle2}/paths?locale=${lang}`
+  const [shortest, blood] = await Promise.all([
+    // As many as the API gives, for the ones that are left out: a couple
+    // with three children has fifteen paths through them
+    appState.apiGet(`${url}&max=50`),
+    appState.apiGet(`${url}&max=1&blood_only=true`),
+  ])
+  for (const result of [shortest, blood]) {
+    if (!('data' in result)) {
+      return result
+    }
+  }
+  const found = [
+    ...shortest.data
+      .filter(
+        path =>
+          !throughSharedChild(path) &&
+          !(ignoreMarriage === 'yes' && isTheirMarriage(path))
+      )
+      .slice(0, paths),
+    ...blood.data,
+  ]
+  if (found.length === 0) {
+    return {data: [], info: {notConnected: true}}
+  }
+  const handles = [
+    ...new Set(found.flatMap(path => path.steps.map(s => s.handle))),
+  ]
+  const relationships = [
+    ...new Set(
+      found.map(path => path.steps.at(-1).relationship_string).filter(Boolean)
+    ),
+  ]
+  const fetchPeople = list =>
+    appState.apiGet(
+      `/api/people/?handles=${list.join(
+        ','
+      )}&locale=${lang}&profile=self&extend=${treeExtend},parent_family_list`
+    )
+  const people = await fetchPeople(handles)
+  if (!('data' in people)) {
+    return people
+  }
+  const parents = missingParents(found, people.data)
+  if (parents.length === 0) {
+    return {data: people.data, info: {relationships}}
+  }
+  const more = await fetchPeople(parents)
+  if (!('data' in more)) {
+    return more
+  }
+  return {data: [...people.data, ...more.data], info: {relationships}}
+}
+
+// The handles of the parents in the families that the links of the paths run
+// through and that are not in `people` yet: both parents two siblings share,
+// whom a sibling link skips although they are the common ancestors, and the
+// other parent of a parent or child link, so that the chart shows couples.
+function missingParents(paths, people) {
+  const graph = new FamilyGraph(people)
+  const handles = new Set()
+  // The parent family of `child` that `matches`
+  const familyOf = (child, matches) => graph.parentFamilies(child).find(matches)
+  const hasParent = parent => family =>
+    family.father_handle === parent || family.mother_handle === parent
+  const hasChild = child => family =>
+    (family.child_ref_list ?? []).some(ref => ref.ref === child)
+  for (const {steps} of paths) {
+    steps.forEach((step, i) => {
+      const before = steps[i - 1]?.handle
+      let family
+      if (step.link === 'sibling') {
+        family = familyOf(before, hasChild(step.handle))
+      } else if (step.link === 'parent') {
+        family = familyOf(before, hasParent(step.handle))
+      } else if (step.link === 'child') {
+        family = familyOf(step.handle, hasParent(before))
+      }
+      for (const parent of [family?.father_handle, family?.mother_handle]) {
+        if (parent && !graph.person(parent)) {
+          handles.add(parent)
+        }
+      }
+    })
+  }
+  return [...handles]
+}
+
+// The second person of the connection chart, as a chip that opens the person
+// picker, and their relationship to the selected person
+function renderConnectionControls(view) {
+  // The selected person is no second person
+  const other =
+    view.chartState.other !== view.grampsId ? view.chartState.other : ''
+  const person = other && view.chartData.find(p => p.gramps_id === other)
+  let label = view._('Select a second person')
+  if (person?.profile) {
+    label = formatChartName(
+      person.profile,
+      view.settingValues.nameDisplayFormat
+    )
+  } else if (other) {
+    label = other
+  }
+  const {relationships = [], notConnected} = view.chartInfo
+  let text = ''
+  if (notConnected) {
+    text = view._('No connection found')
+  } else if (person) {
+    text = relationships.join(' · ')
+  }
+  return html`
+    <md-assist-chip
+      id="btn-connection-person"
+      label="${label}"
+      @click=${() =>
+        view.renderRoot.querySelector('#connection-person-select')?.open()}
+    >
+      <grampsjs-icon
+        slot="icon"
+        path="${mdiAccountArrowRight}"
+        color="currentColor"
+      ></grampsjs-icon>
+    </md-assist-chip>
+    ${text ? html`<span class="connection-relationship">${text}</span>` : ''}
+    <grampsjs-form-select-object
+      id="connection-person-select"
+      objectType="person"
+      .appState="${view.appState}"
+      fixedMenuPosition
+      hideButton
+      @select-object:changed=${e => {
+        e.stopPropagation()
+        const grampsId = e.detail.objects[0]?.object?.gramps_id
+        if (grampsId) {
+          view.setOtherPerson(grampsId)
+        }
+      }}
+    ></grampsjs-form-select-object>
+  `
+}
+
 export const chartDefinitions = {
   ancestor: {
     settings: [
@@ -354,6 +557,52 @@ export const chartDefinitions = {
       </grampsjs-fan-chart>
     `,
     renderControls: renderFanColorControls,
+  },
+
+  // How the selected person and a second person are connected. The second
+  // person is in the URL and starts as the home person.
+  connection: {
+    settings: [
+      {
+        name: 'paths',
+        key: 'connectionChartPaths',
+        label: 'Max number of paths',
+        type: 'number',
+        min: 1,
+        default: 1,
+      },
+      {
+        name: 'ignoreMarriage',
+        key: 'connectionChartIgnoreMarriage',
+        label: 'Ignore their marriage',
+        type: 'select',
+        options: [
+          {value: 'no', label: 'No'},
+          {value: 'yes', label: 'Yes'},
+        ],
+        default: 'no',
+      },
+      nameDisplayFormatSetting('connectionChartNameDisplayFormat'),
+    ],
+    editable: false,
+    zoomable: true,
+    exportable: true,
+    dataKey: (grampsId, {paths, ignoreMarriage}, lang, {other}) =>
+      other && other !== grampsId
+        ? `connection:${grampsId}:${other}:${paths}:${ignoreMarriage}:${lang}`
+        : '',
+    load: loadConnection,
+    render: ({grampsId, values, data, appState, state}) => html`
+      <grampsjs-relationship-chart
+        grampsId=${grampsId}
+        highlightGrampsId=${state.other ?? ''}
+        nameDisplayFormat=${values.nameDisplayFormat}
+        .data=${data}
+        .appState="${appState}"
+      >
+      </grampsjs-relationship-chart>
+    `,
+    renderControls: renderConnectionControls,
   },
 }
 

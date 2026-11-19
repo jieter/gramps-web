@@ -517,5 +517,10 @@
   "Changes applied": "Changes applied",
   "These changes can no longer be applied.": "These changes can no longer be applied.",
   "Attach images": "Attach images",
-  "Media files are imported separately, under %s.": "Media files are imported separately, under %s."
+  "Media files are imported separately, under %s.": "Media files are imported separately, under %s.",
+  "Connection": "Connection",
+  "Max number of paths": "Max number of paths",
+  "Select a second person": "Select a second person",
+  "No connection found": "No connection found",
+  "Ignore their marriage": "Ignore their marriage"
 }
