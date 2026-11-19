@@ -1083,6 +1083,20 @@ export class GrampsjsViewObjectsBase extends GrampsjsStaleDataMixin(
     this._selectedHandles = data.data.map(row => row.handle)
   }
 
+  willUpdate(changed) {
+    super.willUpdate(changed)
+    // Rows hold translated text, such as types, so they are formatted again
+    // when the translations change, for example when they arrive after the
+    // rows on a page that is opened directly
+    if (
+      changed.has('appState') &&
+      changed.get('appState')?.i18n?.strings !== this.appState?.i18n?.strings &&
+      this._rawData.length > 0
+    ) {
+      this._data = this._formatRows(this._rawData)
+    }
+  }
+
   update(changed) {
     super.update(changed)
     if (this._fullUrl !== this._oldUrl) {
@@ -1107,10 +1121,7 @@ export class GrampsjsViewObjectsBase extends GrampsjsStaleDataMixin(
         this._errorMessage = ''
         this.error = false
         this._rawData = data.data
-        this._data = data.data.map(row => ({
-          ...this._formatRow(row, this),
-          private: this._renderPrivacyCell(row.private),
-        }))
+        this._data = this._formatRows(data.data)
         this._totalCount = data.total_count
         this._pages = Math.ceil(this._totalCount / this._pageSize)
       } else if ('error' in data) {
@@ -1118,6 +1129,13 @@ export class GrampsjsViewObjectsBase extends GrampsjsStaleDataMixin(
         this._errorMessage = data.error
       }
     })
+  }
+
+  _formatRows(rows) {
+    return rows.map(row => ({
+      ...this._formatRow(row, this),
+      private: this._renderPrivacyCell(row.private),
+    }))
   }
 
   // A closed lock for private rows, an open outline lock for public ones

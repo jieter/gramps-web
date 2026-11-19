@@ -96,7 +96,7 @@ export class GrampsjsViewPlaces extends GrampsjsViewObjectsBase {
     return {
       grampsId: row.gramps_id,
       title: row.name.value,
-      type: row?.place_type?.string || row?.place_type || '',
+      type: this._(row?.place_type?.string || row?.place_type || ''),
       change: prettyTimeDiffTimestamp(row.change, this.appState.i18n.lang),
       tags: row?.extended?.tags ?? [],
     }
